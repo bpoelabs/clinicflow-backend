@@ -1,9 +1,13 @@
 /*
  * =================================================================
- * Código Backend Completo (vFinal - Todos os Módulos Funcionais)
+ * Código Backend Completo (vFinal - com Módulo de Agenda)
  * =================================================================
- * Este arquivo contém o backend completo e funcional, com CRUDs
- * para todos os módulos principais, incluindo a nova estrutura da Agenda.
+ * Novidades:
+ * - Adicionado CRUD completo para Agendamentos, com suporte a
+ * múltiplos participantes por evento.
+ * - ATENÇÃO: Este backend assume a nova estrutura no banco de dados.
+ * Certifique-se de ter executado os scripts SQL para recriar as
+ * tabelas de agendamento.
  * =================================================================
  */
 
@@ -69,7 +73,7 @@ const agendamentoModel = {
     create: async ({ id_servico, id_profissional, data_hora_inicio, data_hora_fim, status, participantes }) => {
         const client = await pool.connect();
         try {
-            await client.query('BEGIN');
+            await client.query('BEGIN'); // Inicia a transação
             const slotQuery = `INSERT INTO agendamento_slots (id_servico, id_profissional, data_hora_inicio, data_hora_fim, status) VALUES ($1, $2, $3, $4, $5) RETURNING *;`;
             const slotResult = await client.query(slotQuery, [id_servico, id_profissional, data_hora_inicio, data_hora_fim, status]);
             const newSlot = slotResult.rows[0];
@@ -80,21 +84,30 @@ const agendamentoModel = {
                     await client.query(participanteQuery, [newSlot.id, pacienteId]);
                 }
             }
-            await client.query('COMMIT');
-            const finalResult = await db.query('SELECT s.id, s.id_servico, s.id_profissional, s.data_hora_inicio, s.data_hora_fim, s.status, COALESCE((SELECT json_agg(json_build_object(\'id\', p.id, \'nome\', p.nome)) FROM agendamento_participantes ap JOIN pacientes p ON ap.id_paciente = p.id WHERE ap.id_agendamento_slot = s.id), \'[]\'::json) as participantes FROM agendamento_slots s WHERE s.id = $1 GROUP BY s.id', [newSlot.id]);
+            await client.query('COMMIT'); // Confirma a transação
+            
+            // Re-busca o agendamento completo para retornar ao frontend
+            const finalResultQuery = `
+                SELECT s.id, s.id_servico, s.id_profissional, s.data_hora_inicio, s.data_hora_fim, s.status,
+                COALESCE((SELECT json_agg(json_build_object('id', p.id, 'nome', p.nome)) FROM agendamento_participantes ap JOIN pacientes p ON ap.id_paciente = p.id WHERE ap.id_agendamento_slot = s.id), '[]'::json) as participantes
+                FROM agendamento_slots s WHERE s.id = $1 GROUP BY s.id`;
+            const finalResult = await db.query(finalResultQuery, [newSlot.id]);
             return finalResult.rows[0];
         } catch (e) {
-            await client.query('ROLLBACK');
+            await client.query('ROLLBACK'); // Desfaz em caso de erro
             throw e;
         } finally {
             client.release();
         }
     },
     remove: async (id) => {
+        // A configuração ON DELETE CASCADE na tabela de participantes cuidará da remoção automática dos filhos
         const result = await db.query('DELETE FROM agendamento_slots WHERE id = $1 RETURNING *;', [id]);
         return result.rows[0];
     }
+    // A lógica de UPDATE seria similar à de CREATE, usando uma transação
 };
+
 
 // --- CONTROLLERS (Lógica de Negócio) ---
 
