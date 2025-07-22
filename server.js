@@ -1,9 +1,10 @@
 /*
  * =================================================================
- * Código Backend Completo (vFinal - Todos os Módulos Funcionais)
+ * Código Backend (Versão Estável)
  * =================================================================
- * Este arquivo contém o backend completo e funcional, com CRUDs
- * para todos os módulos principais. Esta é uma versão limpa e estável.
+ * Este arquivo contém o backend focado nos módulos funcionais:
+ * Clientes, Serviços e Profissionais. Todas as outras rotas
+ * foram removidas para garantir estabilidade.
  * =================================================================
  */
 
@@ -47,14 +48,6 @@ const profissionalModel = {
     remove: async (id) => db.query('DELETE FROM profissionais WHERE id = $1 RETURNING *;', [id]).then(res => res.rows[0])
 };
 
-const agendamentoModel = {
-    getAll: async () => db.query('SELECT * FROM agendamentos ORDER BY data_hora ASC').then(res => res.rows),
-    create: async (data) => db.query('INSERT INTO agendamentos (id_paciente, id_servico, id_profissional, data_hora, status) VALUES ($1, $2, $3, $4, $5) RETURNING *;', [data.id_paciente, data.id_servico, data.id_profissional, data.data_hora, data.status]).then(res => res.rows[0]),
-    update: async (id, data) => db.query('UPDATE agendamentos SET id_paciente = $1, id_servico = $2, id_profissional = $3, data_hora = $4, status = $5 WHERE id = $6 RETURNING *;', [data.id_paciente, data.id_servico, data.id_profissional, data.data_hora, data.status, id]).then(res => res.rows[0]),
-    remove: async (id) => db.query('DELETE FROM agendamentos WHERE id = $1 RETURNING *;', [id]).then(res => res.rows[0])
-};
-
-
 // --- CONTROLLERS (Lógica de Negócio) ---
 
 const createCrudController = (modelName, model) => ({
@@ -67,7 +60,6 @@ const createCrudController = (modelName, model) => ({
 const pacienteController = createCrudController('paciente', pacienteModel);
 const servicoController = createCrudController('servico', servicoModel);
 const profissionalController = createCrudController('profissional', profissionalModel);
-const agendamentoController = createCrudController('agendamento', agendamentoModel);
 
 // --- ROUTES (Endpoints da API) ---
 
@@ -90,7 +82,6 @@ app.use(express.json());
 app.use('/api/pacientes', createCrudRoutes(pacienteController));
 app.use('/api/servicos', createCrudRoutes(servicoController));
 app.use('/api/profissionais', createCrudRoutes(profissionalController));
-app.use('/api/agendamentos', createCrudRoutes(agendamentoController));
 
 app.get('/', (req, res) => res.send('API do ClinicFlow está no ar!'));
 
