@@ -1,12 +1,9 @@
 /*
  * =================================================================
- * Código Backend (vFinal - com Módulo de Agenda)
+ * Código Backend Completo (vFinal - Todos os Módulos Funcionais)
  * =================================================================
- * Novidades:
- * - Adicionado CRUD completo para Agendamentos, com suporte a
- * múltiplos participantes por evento.
- * - ATENÇÃO: Este backend assume uma nova estrutura no banco de dados.
- * Será necessário recriar as tabelas de agendamento.
+ * Este arquivo contém o backend completo e funcional, com CRUDs
+ * para todos os módulos principais, incluindo a nova estrutura da Agenda.
  * =================================================================
  */
 
@@ -38,8 +35,8 @@ const pacienteModel = {
 
 const servicoModel = {
     getAll: async () => db.query('SELECT * FROM servicos ORDER BY nome ASC').then(res => res.rows),
-    create: async (data) => db.query('INSERT INTO servicos (nome, preco, duracao_minutos, capacidade) VALUES ($1, $2, $3, $4) RETURNING *;', [data.nome, data.preco, data.duracao_minutos, data.capacidade]).then(res => res.rows[0]),
-    update: async (id, data) => db.query('UPDATE servicos SET nome = $1, preco = $2, duracao_minutos = $3, capacidade = $4 WHERE id = $5 RETURNING *;', [data.nome, data.preco, data.duracao_minutos, data.capacidade, id]).then(res => res.rows[0]),
+    create: async (data) => db.query('INSERT INTO servicos (nome, preco, duracao_minutos, capacidade) VALUES ($1, $2, $3, $4) RETURNING *;', [data.nome, data.preco, data.duracao_minutos, data.capacidade || 1]).then(res => res.rows[0]),
+    update: async (id, data) => db.query('UPDATE servicos SET nome = $1, preco = $2, duracao_minutos = $3, capacidade = $4 WHERE id = $5 RETURNING *;', [data.nome, data.preco, data.duracao_minutos, data.capacidade || 1, id]).then(res => res.rows[0]),
     remove: async (id) => db.query('DELETE FROM servicos WHERE id = $1 RETURNING *;', [id]).then(res => res.rows[0])
 };
 
@@ -55,10 +52,14 @@ const agendamentoModel = {
         const query = `
             SELECT 
                 s.id, s.id_servico, s.id_profissional, s.data_hora_inicio, s.data_hora_fim, s.status,
-                json_agg(json_build_object('id', p.id, 'nome', p.nome)) as participantes
+                COALESCE(
+                    (SELECT json_agg(json_build_object('id', p.id, 'nome', p.nome))
+                     FROM agendamento_participantes ap
+                     JOIN pacientes p ON ap.id_paciente = p.id
+                     WHERE ap.id_agendamento_slot = s.id),
+                    '[]'::json
+                ) as participantes
             FROM agendamento_slots s
-            LEFT JOIN agendamento_participantes ap ON s.id = ap.id_agendamento_slot
-            LEFT JOIN pacientes p ON ap.id_paciente = p.id
             GROUP BY s.id
             ORDER BY s.data_hora_inicio ASC;
         `;
@@ -68,7 +69,7 @@ const agendamentoModel = {
     create: async ({ id_servico, id_profissional, data_hora_inicio, data_hora_fim, status, participantes }) => {
         const client = await pool.connect();
         try {
-            await client.query('BEGIN'); // Inicia a transação
+            await client.query('BEGIN');
             const slotQuery = `INSERT INTO agendamento_slots (id_servico, id_profissional, data_hora_inicio, data_hora_fim, status) VALUES ($1, $2, $3, $4, $5) RETURNING *;`;
             const slotResult = await client.query(slotQuery, [id_servico, id_profissional, data_hora_inicio, data_hora_fim, status]);
             const newSlot = slotResult.rows[0];
@@ -79,23 +80,21 @@ const agendamentoModel = {
                     await client.query(participanteQuery, [newSlot.id, pacienteId]);
                 }
             }
-            await client.query('COMMIT'); // Confirma a transação
-            return newSlot;
+            await client.query('COMMIT');
+            const finalResult = await db.query('SELECT s.id, s.id_servico, s.id_profissional, s.data_hora_inicio, s.data_hora_fim, s.status, COALESCE((SELECT json_agg(json_build_object(\'id\', p.id, \'nome\', p.nome)) FROM agendamento_participantes ap JOIN pacientes p ON ap.id_paciente = p.id WHERE ap.id_agendamento_slot = s.id), \'[]\'::json) as participantes FROM agendamento_slots s WHERE s.id = $1 GROUP BY s.id', [newSlot.id]);
+            return finalResult.rows[0];
         } catch (e) {
-            await client.query('ROLLBACK'); // Desfaz em caso de erro
+            await client.query('ROLLBACK');
             throw e;
         } finally {
             client.release();
         }
     },
     remove: async (id) => {
-        // ON DELETE CASCADE na tabela de participantes cuidará da remoção dos filhos
         const result = await db.query('DELETE FROM agendamento_slots WHERE id = $1 RETURNING *;', [id]);
         return result.rows[0];
     }
-    // A lógica de UPDATE seria similar à de CREATE, usando uma transação
 };
-
 
 // --- CONTROLLERS (Lógica de Negócio) ---
 
