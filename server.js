@@ -1,13 +1,12 @@
 /*
  * =================================================================
- * Código Backend Completo (vFinal - com Módulo de Agenda)
+ * Código Backend (vFinal - com Agendamento Recorrente)
  * =================================================================
  * Novidades:
- * - Adicionado CRUD completo para Agendamentos, com suporte a
- * múltiplos participantes por evento.
- * - ATENÇÃO: Este backend assume a nova estrutura no banco de dados.
- * Certifique-se de ter executado os scripts SQL para recriar as
- * tabelas de agendamento.
+ * - Adicionada uma nova rota e lógica para criar agendamentos
+ * recorrentes (semanais).
+ * - ATENÇÃO: Este backend assume a nova estrutura no banco de dados
+ * para agendamentos em grupo.
  * =================================================================
  */
 
@@ -73,7 +72,7 @@ const agendamentoModel = {
     create: async ({ id_servico, id_profissional, data_hora_inicio, data_hora_fim, status, participantes }) => {
         const client = await pool.connect();
         try {
-            await client.query('BEGIN'); // Inicia a transação
+            await client.query('BEGIN');
             const slotQuery = `INSERT INTO agendamento_slots (id_servico, id_profissional, data_hora_inicio, data_hora_fim, status) VALUES ($1, $2, $3, $4, $5) RETURNING *;`;
             const slotResult = await client.query(slotQuery, [id_servico, id_profissional, data_hora_inicio, data_hora_fim, status]);
             const newSlot = slotResult.rows[0];
@@ -84,9 +83,8 @@ const agendamentoModel = {
                     await client.query(participanteQuery, [newSlot.id, pacienteId]);
                 }
             }
-            await client.query('COMMIT'); // Confirma a transação
+            await client.query('COMMIT');
             
-            // Re-busca o agendamento completo para retornar ao frontend
             const finalResultQuery = `
                 SELECT s.id, s.id_servico, s.id_profissional, s.data_hora_inicio, s.data_hora_fim, s.status,
                 COALESCE((SELECT json_agg(json_build_object('id', p.id, 'nome', p.nome)) FROM agendamento_participantes ap JOIN pacientes p ON ap.id_paciente = p.id WHERE ap.id_agendamento_slot = s.id), '[]'::json) as participantes
@@ -94,18 +92,16 @@ const agendamentoModel = {
             const finalResult = await db.query(finalResultQuery, [newSlot.id]);
             return finalResult.rows[0];
         } catch (e) {
-            await client.query('ROLLBACK'); // Desfaz em caso de erro
+            await client.query('ROLLBACK');
             throw e;
         } finally {
             client.release();
         }
     },
     remove: async (id) => {
-        // A configuração ON DELETE CASCADE na tabela de participantes cuidará da remoção automática dos filhos
         const result = await db.query('DELETE FROM agendamento_slots WHERE id = $1 RETURNING *;', [id]);
         return result.rows[0];
     }
-    // A lógica de UPDATE seria similar à de CREATE, usando uma transação
 };
 
 
@@ -121,7 +117,41 @@ const createCrudController = (modelName, model) => ({
 const pacienteController = createCrudController('paciente', pacienteModel);
 const servicoController = createCrudController('servico', servicoModel);
 const profissionalController = createCrudController('profissional', profissionalModel);
-const agendamentoController = createCrudController('agendamento', agendamentoModel);
+
+const agendamentoController = {
+    ...createCrudController('agendamento', agendamentoModel),
+    criarRecorrente: async (req, res) => {
+        const { baseAppointment, recurrence } = req.body;
+        const { recurringWeeks, recurringDays } = recurrence;
+        
+        const createdAppointments = [];
+        try {
+            const startDate = new Date(baseAppointment.data_hora_inicio);
+            const serviceDuration = baseAppointment.duracao_minutos || 60;
+
+            for (let week = 0; week < recurringWeeks; week++) {
+                for (const dayOfWeek of recurringDays) { // dayOfWeek: 0=Dom, 1=Seg, ...
+                    const appointmentDate = new Date(startDate);
+                    appointmentDate.setDate(startDate.getDate() + (dayOfWeek - startDate.getDay()) + (week * 7));
+                    
+                    const data_hora_fim = new Date(appointmentDate.getTime() + serviceDuration * 60000);
+
+                    const newAppointmentData = {
+                        ...baseAppointment,
+                        data_hora_inicio: appointmentDate.toISOString(),
+                        data_hora_fim: data_hora_fim.toISOString(),
+                    };
+                    const created = await agendamentoModel.create(newAppointmentData);
+                    createdAppointments.push(created);
+                }
+            }
+            res.status(201).json({ mensagem: "Agendamentos recorrentes criados com sucesso!", agendamentos: createdAppointments });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ mensagem: "Erro ao criar agendamentos recorrentes." });
+        }
+    }
+};
 
 // --- ROUTES (Endpoints da API) ---
 
@@ -134,6 +164,9 @@ const createCrudRoutes = (controller) => {
     return router;
 };
 
+const agendamentosRouter = createCrudRoutes(agendamentoController);
+agendamentosRouter.post('/recorrente', agendamentoController.criarRecorrente); // NOVA ROTA
+
 // --- Servidor Principal ---
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -144,7 +177,7 @@ app.use(express.json());
 app.use('/api/pacientes', createCrudRoutes(pacienteController));
 app.use('/api/servicos', createCrudRoutes(servicoController));
 app.use('/api/profissionais', createCrudRoutes(profissionalController));
-app.use('/api/agendamentos', createCrudRoutes(agendamentoController));
+app.use('/api/agendamentos', agendamentosRouter);
 
 app.get('/', (req, res) => res.send('API do ClinicFlow está no ar!'));
 
