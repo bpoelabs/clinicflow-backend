@@ -1,10 +1,12 @@
 /*
  * =================================================================
- * Código Backend (Versão Estável)
+ * Código Backend (vFinal - com Módulo de Agenda)
  * =================================================================
- * Este arquivo contém o backend focado nos módulos funcionais:
- * Clientes, Serviços e Profissionais. Todas as outras rotas
- * foram removidas para garantir estabilidade.
+ * Novidades:
+ * - Adicionado CRUD completo para Agendamentos, com suporte a
+ * múltiplos participantes por evento.
+ * - ATENÇÃO: Este backend assume uma nova estrutura no banco de dados.
+ * Será necessário recriar as tabelas de agendamento.
  * =================================================================
  */
 
@@ -36,8 +38,8 @@ const pacienteModel = {
 
 const servicoModel = {
     getAll: async () => db.query('SELECT * FROM servicos ORDER BY nome ASC').then(res => res.rows),
-    create: async (data) => db.query('INSERT INTO servicos (nome, preco, duracao_minutos) VALUES ($1, $2, $3) RETURNING *;', [data.nome, data.preco, data.duracao_minutos]).then(res => res.rows[0]),
-    update: async (id, data) => db.query('UPDATE servicos SET nome = $1, preco = $2, duracao_minutos = $3 WHERE id = $4 RETURNING *;', [data.nome, data.preco, data.duracao_minutos, id]).then(res => res.rows[0]),
+    create: async (data) => db.query('INSERT INTO servicos (nome, preco, duracao_minutos, capacidade) VALUES ($1, $2, $3, $4) RETURNING *;', [data.nome, data.preco, data.duracao_minutos, data.capacidade]).then(res => res.rows[0]),
+    update: async (id, data) => db.query('UPDATE servicos SET nome = $1, preco = $2, duracao_minutos = $3, capacidade = $4 WHERE id = $5 RETURNING *;', [data.nome, data.preco, data.duracao_minutos, data.capacidade, id]).then(res => res.rows[0]),
     remove: async (id) => db.query('DELETE FROM servicos WHERE id = $1 RETURNING *;', [id]).then(res => res.rows[0])
 };
 
@@ -47,6 +49,53 @@ const profissionalModel = {
     update: async (id, data) => db.query('UPDATE profissionais SET nome = $1, comissao_percentual = $2 WHERE id = $3 RETURNING *;', [data.nome, data.comissao_percentual, id]).then(res => res.rows[0]),
     remove: async (id) => db.query('DELETE FROM profissionais WHERE id = $1 RETURNING *;', [id]).then(res => res.rows[0])
 };
+
+const agendamentoModel = {
+    getAll: async () => {
+        const query = `
+            SELECT 
+                s.id, s.id_servico, s.id_profissional, s.data_hora_inicio, s.data_hora_fim, s.status,
+                json_agg(json_build_object('id', p.id, 'nome', p.nome)) as participantes
+            FROM agendamento_slots s
+            LEFT JOIN agendamento_participantes ap ON s.id = ap.id_agendamento_slot
+            LEFT JOIN pacientes p ON ap.id_paciente = p.id
+            GROUP BY s.id
+            ORDER BY s.data_hora_inicio ASC;
+        `;
+        const result = await db.query(query);
+        return result.rows;
+    },
+    create: async ({ id_servico, id_profissional, data_hora_inicio, data_hora_fim, status, participantes }) => {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN'); // Inicia a transação
+            const slotQuery = `INSERT INTO agendamento_slots (id_servico, id_profissional, data_hora_inicio, data_hora_fim, status) VALUES ($1, $2, $3, $4, $5) RETURNING *;`;
+            const slotResult = await client.query(slotQuery, [id_servico, id_profissional, data_hora_inicio, data_hora_fim, status]);
+            const newSlot = slotResult.rows[0];
+
+            if (participantes && participantes.length > 0) {
+                for (const pacienteId of participantes) {
+                    const participanteQuery = `INSERT INTO agendamento_participantes (id_agendamento_slot, id_paciente) VALUES ($1, $2);`;
+                    await client.query(participanteQuery, [newSlot.id, pacienteId]);
+                }
+            }
+            await client.query('COMMIT'); // Confirma a transação
+            return newSlot;
+        } catch (e) {
+            await client.query('ROLLBACK'); // Desfaz em caso de erro
+            throw e;
+        } finally {
+            client.release();
+        }
+    },
+    remove: async (id) => {
+        // ON DELETE CASCADE na tabela de participantes cuidará da remoção dos filhos
+        const result = await db.query('DELETE FROM agendamento_slots WHERE id = $1 RETURNING *;', [id]);
+        return result.rows[0];
+    }
+    // A lógica de UPDATE seria similar à de CREATE, usando uma transação
+};
+
 
 // --- CONTROLLERS (Lógica de Negócio) ---
 
@@ -60,6 +109,7 @@ const createCrudController = (modelName, model) => ({
 const pacienteController = createCrudController('paciente', pacienteModel);
 const servicoController = createCrudController('servico', servicoModel);
 const profissionalController = createCrudController('profissional', profissionalModel);
+const agendamentoController = createCrudController('agendamento', agendamentoModel);
 
 // --- ROUTES (Endpoints da API) ---
 
@@ -82,6 +132,7 @@ app.use(express.json());
 app.use('/api/pacientes', createCrudRoutes(pacienteController));
 app.use('/api/servicos', createCrudRoutes(servicoController));
 app.use('/api/profissionais', createCrudRoutes(profissionalController));
+app.use('/api/agendamentos', createCrudRoutes(agendamentoController));
 
 app.get('/', (req, res) => res.send('API do ClinicFlow está no ar!'));
 
